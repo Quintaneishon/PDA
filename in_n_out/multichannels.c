@@ -62,7 +62,7 @@ int main (int argc, char *argv[]) {
     exit(1);
   }
 
-  channels = atoi(argv[1])
+  channels = atoi(argv[1]);
 
   const char *client_name = "in_to_out";
   jack_options_t options = JackNoStartServer;
@@ -106,7 +106,7 @@ int main (int argc, char *argv[]) {
   int i;
   char port_name[20];
 
-  input_ports = malloc(channels * sizeof(jack_port_t *))
+  input_ports = malloc(channels * sizeof(jack_port_t *));
   for (i = 0; i < channels; ++i){     
     sprintf(port_name,"input%d",i+1)
     input_ports[i] = jack_port_register (client, port_name, JACK_DEFAULT_AUDIO_TYPE,JackPortIsInput, 0); 
@@ -139,9 +139,6 @@ int main (int argc, char *argv[]) {
   }
   
   printf ("Agent activated.\n");
-   
-  // free serverports_names variable, we're not going to use it again
-  free (serverports_names);
   
   
   printf ("done.\n");
