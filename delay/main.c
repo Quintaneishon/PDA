@@ -12,8 +12,7 @@
  jack_port_t *input_port;
  jack_port_t *output_port;
  jack_client_t *client;
- int secs;
- float b_size;
+ int secs, b_size;
  jack_default_audio_sample_t b; 
  
  /**
@@ -103,7 +102,7 @@
    
    b_size = secs * jack_get_sample_rate(client);
    printf("Delay samples: %d.\n",b_size);
-   b = calloc(b_size,jack_default_audio_sample_t)
+   b = calloc(b_size,sizeof(jack_default_audio_sample_t));
 
    
    /* Tell the JACK server that we are ready to roll.
