@@ -12,7 +12,8 @@
  jack_port_t *input_port;
  jack_port_t *output_port;
  jack_client_t *client;
- int secs, b_size;
+ float secs, 
+ int b_size;
  jack_default_audio_sample_t *b; 
  
  /**
@@ -60,7 +61,7 @@
         exit(1);
     }
 
-    secs = atoi(argv[1]);
+    secs = atof(argv[1]);
 
    const char *client_name = "in_to_out";
    jack_options_t options = JackNoStartServer;
