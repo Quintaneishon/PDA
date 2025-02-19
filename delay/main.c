@@ -28,7 +28,19 @@
    
    in = jack_port_get_buffer (input_port, nframes);
    out = jack_port_get_buffer (output_port, nframes);
-   memcpy (out, in, nframes * sizeof (jack_default_audio_sample_t));
+  
+   int i,j;
+
+   for (i = 0; i < nframes; ++i)
+   {
+    out[i] = b[j];
+    b[j] = in[i];
+    ++j;
+    if j == b_size {
+        j = 0;
+    }
+   }
+   
    return 0;
  }
  
