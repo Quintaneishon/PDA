@@ -108,7 +108,7 @@ int main (int argc, char *argv[]) {
 
   input_ports = malloc(channels * sizeof(jack_port_t *));
   for (i = 0; i < channels; ++i){     
-    sprintf(port_name,"input%d",i+1)
+    sprintf(port_name,"input%d",i+1);
     input_ports[i] = jack_port_register (client, port_name, JACK_DEFAULT_AUDIO_TYPE,JackPortIsInput, 0); 
     /* check that both ports were created succesfully */
     if (input_ports[i] == NULL) {
@@ -119,7 +119,7 @@ int main (int argc, char *argv[]) {
   
   
   /* create the agent output port */
-  output_ports = malloc(channels * sizeof(jack_port_t *))
+  output_ports = malloc(channels * sizeof(jack_port_t *));
   for (i = 0; i < channels; ++i){     
     sprintf(port_name,"output%d",i+1)
     output_ports[i] = jack_port_register (client, port_name, JACK_DEFAULT_AUDIO_TYPE,JackPortIsOutput, 0); 
