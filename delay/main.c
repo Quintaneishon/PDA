@@ -24,26 +24,24 @@
   * port to its output port. It will exit when stopped by 
   * the user (e.g. using Ctrl-C on a unix-ish operating system)
   */
- int jack_callback (jack_nframes_t nframes, void *arg){
-   jack_default_audio_sample_t *in, *out;
-   
-   in = jack_port_get_buffer (input_port, nframes);
-   out = jack_port_get_buffer (output_port, nframes);
-  
-   int i,j;
+ int jack_callback(jack_nframes_t nframes, void *arg) {
+    jack_default_audio_sample_t *in, *out;
+    static int j = 0; // Initialize j
 
-   for (i = 0; i < nframes; ++i)
-   {
-    out[i] = b[j];
-    b[j] = in[i];
-    ++j;
-    if (j == b_size) {
-        j = 0;
+    in = jack_port_get_buffer(input_port, nframes);
+    out = jack_port_get_buffer(output_port, nframes);
+
+    for (int i = 0; i < nframes; ++i) {
+        out[i] = b[j];
+        b[j] = in[i];
+        ++j;
+        if (j == b_size) {
+            j = 0;
+        }
     }
-   }
-   
-   return 0;
- }
+
+    return 0;
+}
  
  
  /**
