@@ -12,7 +12,7 @@
  jack_port_t *input_port;
  jack_port_t *output_port;
  jack_client_t *client;
- float secs, 
+ float secs;
  int b_size;
  jack_default_audio_sample_t *b; 
  
