@@ -13,7 +13,7 @@
  jack_port_t *output_port;
  jack_client_t *client;
  int secs, b_size;
- jack_default_audio_sample_t b; 
+ jack_default_audio_sample_t *b; 
  
  /**
   * The process callback for this JACK application is called in a
