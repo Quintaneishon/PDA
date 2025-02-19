@@ -36,7 +36,7 @@
     out[i] = b[j];
     b[j] = in[i];
     ++j;
-    if j == b_size {
+    if (j == b_size) {
         j = 0;
     }
    }
