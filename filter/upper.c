@@ -24,6 +24,7 @@
  double sample_rate;
  double *freqs;
  double f_min = 500;
+ double f_max = 1000;
  
  /**
   * The process callback for this JACK application is called in a
@@ -49,8 +50,8 @@
    /* Aca empieza lo bueno */
    
    for(i = 0; i< nframes; ++i){
-    if(fabs(freqs[i]) >= f_min){
-        o_fft[i] = freqs[i]
+    if(fabs(freqs[i]) >= f_min && fabs(freqs[i]) >= f_max ){
+        o_fft[i] = i_fft[i]
     } else {
         o_fft[i] = 0.0
     }
@@ -127,9 +128,9 @@
    freqs = malloc(sizeof(double)*nframes);
    freqs[0] = 0.0;
    freqs[nframes/2] = sample_rate/2;
-   double freq_hop = (sample_rate/2)/(nframes/2)
-   for(int i = 0; nframes/2; ++i){
-    freqs[i] = freq_hop
+   double freq_hop = sample_rate/nframes;
+   for(int i = 1; nframes/2; ++i){
+    freqs[i] = freq_hop*i
     freqs[nframes-i] = -freqs[i];
    }
 
