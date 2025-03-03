@@ -23,6 +23,9 @@
  
  double sample_rate;
  double *freqs;
+ int fft_size;
+ double *hann;
+ jack_default_audio_sample_t *b1,*b2; 
  double f_min = 500;
  double f_max = 1000;
  
@@ -34,37 +37,71 @@
   * port to its output port. It will exit when stopped by 
   * the user (e.g. using Ctrl-C on a unix-ish operating system)
   */
+
+ void filter(jack_default_audio_sample_t *data){
+    int i;
+
+    for( i = 0; i < fft_size; ++i ){
+        i_time[i] = data[i] * hann[i];
+    }
+
+    // Obteniendo la transformada de Fourier de este periodo
+    fftw_execute(i_forward);
+
+    o_fft[0] = i_fft[0];
+    for( i = 1; i < fft_size; ++i){
+        if(fabs(freqs[i]) >= f_min && fabs(freqs[i]) <= f_max ){
+            o_fft[i] = i_fft[i];
+        } else {
+            o_fft[i] = 0.0;
+        }
+    }
+
+    // Regresando al dominio del tiempo
+    fftw_execute(o_inverse);
+    for(i = 0; i < fft_size; ++i){
+        data[i] = creal(o_time[i])/fft_size; //fftw3 requiere normalizar su salida real de esta manera
+        data[i] *= hann[i];
+    }
+
+ } 
+
  int jack_callback (jack_nframes_t nframes, void *arg){
    jack_default_audio_sample_t *in, *out;
-   int i;
+   int i,j;
    
    in = (jack_default_audio_sample_t *)jack_port_get_buffer (input_port, nframes);
    out = (jack_default_audio_sample_t *)jack_port_get_buffer (output_port, nframes);
    
-   // Obteniendo la transformada de Fourier de este periodo
-   for(i = 0; i < nframes; ++i){
-     i_time[i] = in[i];
-   }
-   fftw_execute(i_forward);
-   
-   /* Aca empieza lo bueno */
-   
-   for(i = 0; i< nframes; ++i){
-    if(fabs(freqs[i]) >= f_min && fabs(freqs[i]) >= f_max ){
-        o_fft[i] = i_fft[i];
-    } else {
-        o_fft[i] = 0.0;
-    }
+   // assumptions
+   // - b1 has the filtered last two windows
+   // - b2 has in its 1st half the last unfiltered window
+
+   // copy in to 2nd half of b2
+   for(i = 0, j = nframes; i < nframes; ++i, ++j){
+    b2[j] = in[i];
    }
 
-   /* Aca termina */
-   
-   // Regresando al dominio del tiempo
-   fftw_execute(o_inverse);
-   for(i = 0; i < nframes; ++i){
-     out[i] = creal(o_time[i])/nframes; //fftw3 requiere normalizar su salida real de esta manera
+   // filter b2
+   filter(b2);
+
+   // store in out the sum of 2nd half of b1 and 1st half of b2
+   for( i = 0, j = nframes; i < nframes; ++i, ++j){
+    out[i] = b1[j] + b2[i];
    }
-   
+
+   // take care of assumptions for next window
+
+   // copy b2 to b1
+   for( i = 0; i < fft_size; ++i){
+    b1[i] = b2[i];
+   }
+
+   // copy in to 1st half of b2
+   for(i=0; i < nframes; ++i){
+    b2[i] = in[i];
+   }
+
    return 0;
  }
  
@@ -114,25 +151,36 @@
    printf ("Window size: %d\n", jack_get_buffer_size (client));
    sample_rate = (double)jack_get_sample_rate(client);
    int nframes = jack_get_buffer_size (client);
+   fft_size = 2 * nframes;
    
    //preparing FFTW3 buffers
-   i_fft = (double complex *) fftw_malloc(sizeof(double complex) * nframes);
-   i_time = (double complex *) fftw_malloc(sizeof(double complex) * nframes);
-   o_fft = (double complex *) fftw_malloc(sizeof(double complex) * nframes);
-   o_time = (double complex *) fftw_malloc(sizeof(double complex) * nframes);
+   i_fft = (double complex *) fftw_malloc(sizeof(double complex) * fft_size);
+   i_time = (double complex *) fftw_malloc(sizeof(double complex) * fft_size);
+   o_fft = (double complex *) fftw_malloc(sizeof(double complex) * fft_size);
+   o_time = (double complex *) fftw_malloc(sizeof(double complex) * fft_size);
    
-   i_forward = fftw_plan_dft_1d(nframes, i_time, i_fft , FFTW_FORWARD, FFTW_MEASURE);
-   o_inverse = fftw_plan_dft_1d(nframes, o_fft , o_time, FFTW_BACKWARD, FFTW_MEASURE);
+   i_forward = fftw_plan_dft_1d(fft_size, i_time, i_fft , FFTW_FORWARD, FFTW_MEASURE);
+   o_inverse = fftw_plan_dft_1d(fft_size, o_fft , o_time, FFTW_BACKWARD, FFTW_MEASURE);
 
    /* Aca esta el meollo del asunto */
+   int i;
    freqs = malloc(sizeof(double)*nframes);
    freqs[0] = 0.0;
-   freqs[nframes/2] = sample_rate/2;
-   double freq_hop = sample_rate/nframes;
-   for(int i = 1; nframes/2; ++i){
+   freqs[fft_size/2] = sample_rate/2;
+   double freq_hop = sample_rate/fft_size;
+
+   for(i = 1; fft_size/2; ++i){
     freqs[i] = freq_hop*i;
-    freqs[nframes-i] = -freqs[i];
+    freqs[fft_size-i] = -freqs[i];
    }
+
+   hann = malloc(sizeof(double) * fft_size);
+   for(i = 0; i < fft_size; ++i){
+    hann[i] = 0.5 * (1 - cos(2*M_PI*i/fft_size));
+   }
+
+   b1 = (jack_default_audio_sample_t*)calloc(fft_size,sizeof(jack_default_audio_sample_t));
+   b2 = (jack_default_audio_sample_t*)calloc(fft_size,sizeof(jack_default_audio_sample_t));
 
    /* Aca termina */
    
