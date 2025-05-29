@@ -1,6 +1,6 @@
 module music_go_aira
 
-go 1.23
+go 1.23.0
 
 require (
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
