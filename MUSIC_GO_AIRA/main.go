@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/runningwild/go-fftw"
+	"github.com/mjibson/go-dsp/fft"
 	"github.com/xthexder/go-jack"
 )
 
@@ -15,7 +15,6 @@ var (
 	inputPort   *jack.Port
 	outputPort  *jack.Port
 	sampleRate  float64
-	iFFT, oFFT  *fftw.DFT1D
 )
 
 // processCallback is called by JACK in a realtime thread for audio processing
@@ -25,22 +24,23 @@ func processCallback(nframes uint32) int {
 	out := outputPort.GetBuffer(nframes)
 
 	// Convert input samples to complex for FFT
-	for i := range in {
-		iFFT.In[i] = complex(float64(in[i]), 0)
+	input := make([]complex128, len(in))
+	for i, sample := range in {
+		input[i] = complex(float64(sample), 0)
 	}
 
-	// Execute forward FFT
-	iFFT.Execute()
+	// Perform forward FFT
+	spectrum := fft.FFT(input)
 
-	// Copy FFT results - here you could modify the frequency domain data
-	copy(oFFT.In, iFFT.Out)
+	// Here you could modify the frequency domain data
+	// For now, we just pass it through
 
-	// Execute inverse FFT
-	oFFT.Execute()
+	// Perform inverse FFT
+	timeSignal := fft.IFFT(spectrum)
 
 	// Convert back to audio samples and normalize
 	for i := range out {
-		out[i] = jack.AudioSample(real(oFFT.Out[i]) / float64(nframes))
+		out[i] = jack.AudioSample(real(timeSignal[i]))
 	}
 
 	return 0
@@ -81,12 +81,6 @@ func main() {
 
 	fmt.Printf("Sample rate: %v\n", sampleRate)
 	fmt.Printf("Buffer size: %v\n", bufferSize)
-
-	// Initialize FFTW
-	iFFT = fftw.NewDFT1D(int(bufferSize), fftw.Forward, fftw.OutOfPlace, fftw.Estimate)
-	oFFT = fftw.NewDFT1D(int(bufferSize), fftw.Backward, fftw.OutOfPlace, fftw.Estimate)
-	defer iFFT.Close()
-	defer oFFT.Close()
 
 	// Activate client
 	if code := client.Activate(); code != 0 {
