@@ -8,8 +8,6 @@ import (
 	"os/signal"
 	"sort"
 	"syscall"
-	"time"
-	"math/rand"
 
 	"github.com/mjibson/go-dsp/fft"
 	"github.com/xthexder/go-jack"
