@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"sort"
 	"syscall"
+	"time"
 
 	"github.com/mjibson/go-dsp/fft"
 	"github.com/xthexder/go-jack"
@@ -33,6 +34,11 @@ var (
 	minFreq        = 85.0   // Minimum frequency to analyze (Hz)
 	maxFreq        = 255.0  // Maximum frequency to analyze (Hz)
 	lastAngle      = 0.0    // Store last valid angle
+	
+	// Print control
+	lastPrintTime = time.Now()
+	printInterval = 500 * time.Millisecond // Print every 500ms
+	clearLine     = "\r\033[K"            // ANSI escape code to clear line
 )
 
 // Calculate signal energy in the voice frequency range
@@ -140,10 +146,27 @@ func processCallback(nframes uint32) int {
 		// Update angle if we have valid estimates
 		if validEstimates > 0 {
 			lastAngle = sumAngle / maxPower
-			fmt.Printf("\rVoice detected! Estimated DOA: %.1f degrees (Energy: %.6f)", lastAngle, energy)
+			
+			// Print only every printInterval
+			if time.Since(lastPrintTime) >= printInterval {
+				// Clear the current line and print the new status
+				fmt.Printf("%s[VOICE DETECTED] DOA: %3.1f° | Energy: %.6f | Time: %s\n", 
+					clearLine, 
+					lastAngle, 
+					energy,
+					time.Now().Format("15:04:05.000"))
+				lastPrintTime = time.Now()
+			}
 		}
 	} else {
-		fmt.Printf("\rNo voice detected (Energy: %.6f)                              ", energy)
+		// Print no voice detected message less frequently
+		if time.Since(lastPrintTime) >= printInterval {
+			fmt.Printf("%s[NO VOICE] Energy: %.6f | Time: %s\n", 
+				clearLine,
+				energy,
+				time.Now().Format("15:04:05.000"))
+			lastPrintTime = time.Now()
+		}
 	}
 
 	// Pass through audio to output (using first input)
