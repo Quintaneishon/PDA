@@ -102,6 +102,9 @@ func processCallback(nframes uint32) int {
 		var maxPower float64
 		validEstimates := 0
 
+		// Generate angles with finer resolution
+		angles := generateAngles(-90, 90, 0.5) // Changed to 0.5-degree resolution
+
 		for _, freqBin := range freqBins {
 			// Extract the frequency bin of interest
 			thisX := make([]complex128, N)
@@ -118,9 +121,9 @@ func processCallback(nframes uint32) int {
 			sortedQ := reorderEigenvectors(Q, indices)
 			_, Qn := splitEigenvectors(sortedQ, r, N)
 
-			// Generate angles and compute MUSIC spectrum
-			angles := generateAngles(-90, 90, 1)
-			a1 := computeSteeringVectors(N, angles, float64(freqBin)*binSize, d, c)
+			// Compute MUSIC spectrum
+			freq := float64(freqBin) * binSize
+			a1 := computeSteeringVectors(N, angles, 2*math.Pi*freq, d, c)
 			spectrum := computeMUSICspectrum(angles, a1, Qn)
 
 			// Find peak in spectrum
@@ -135,7 +138,7 @@ func processCallback(nframes uint32) int {
 			}
 
 			// Weight the angle by its power
-			power := cmplx.Abs(spectrum.At(maxIdx, 0))
+			power := maxVal
 			if power > 0.1 { // Threshold for valid estimation
 				sumAngle += angles[maxIdx] * power
 				maxPower += power
@@ -321,8 +324,9 @@ func computeSteeringVectors(N int, angles []float64, w, d, c float64) *mat.CDens
 	// Second microphone
 	for j, angle := range angles {
 		angleRad := angle * math.Pi / 180.0
-		delay := -d * math.Sin(angleRad) // Changed from Cos to Sin for linear array
-		phaseShift := cmplx.Exp(complex(0, -2*math.Pi*w*(delay/c)))
+		// For linear array, use sin(theta) for DOA
+		delay := d * math.Sin(angleRad) / c
+		phaseShift := cmplx.Exp(complex(0, w*delay))
 		a1.Set(1, j, phaseShift)
 	}
 
@@ -437,9 +441,10 @@ func computeOuterProduct(X []complex128) [][]complex128 {
 
 // Generate angle range similar to np.arange(-90, 90, 0.1)
 func generateAngles(start, stop, step float64) []float64 {
-	var angles []float64
-	for angle := start; angle < stop; angle += step {
-		angles = append(angles, angle)
+	count := int((stop-start)/step) + 1
+	angles := make([]float64, count)
+	for i := 0; i < count; i++ {
+		angles[i] = start + float64(i)*step
 	}
 	return angles
 }
