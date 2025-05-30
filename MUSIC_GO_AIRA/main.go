@@ -16,29 +16,29 @@ import (
 )
 
 var (
-	client      *jack.Client
-	inputPorts  []*jack.Port
-	outputPort  *jack.Port
-	sampleRate  float64
-	bufferSize  uint32
-	N           = 3     // number of microphones
-	r           = 1     // number of signals in signal subspace
-	d           = 0.18  // distance between microphones in meters (18cm)
-	c           = 343.0 // speed of sound
+	client     *jack.Client
+	inputPorts []*jack.Port
+	outputPort *jack.Port
+	sampleRate float64
+	bufferSize uint32
+	N          = 2     // number of microphones (changed from 3 to 2)
+	r          = 1     // number of signals in signal subspace (changed from 2 to 1)
+	d          = 0.18  // distance between microphones in meters (18cm)
+	c          = 343.0 // speed of sound
 
-	// Triangular array geometry (angles in degrees)
-	micAngles = []float64{0, 120, 240} // Angles of microphones in the triangle
-	
+	// Linear array geometry (2 microphones)
+	micAngles = []float64{0, 180} // Angles of microphones in linear array
+
 	// Voice detection parameters
 	energyThreshold = 0.01  // Adjust this value based on your setup
-	minFreq        = 85.0   // Minimum frequency to analyze (Hz)
-	maxFreq        = 255.0  // Maximum frequency to analyze (Hz)
-	lastAngle      = 0.0    // Store last valid angle
-	
+	minFreq         = 85.0  // Minimum frequency to analyze (Hz)
+	maxFreq         = 255.0 // Maximum frequency to analyze (Hz)
+	lastAngle       = 0.0   // Store last valid angle
+
 	// Print control
 	lastPrintTime = time.Now()
 	printInterval = 500 * time.Millisecond // Print every 500ms
-	clearLine     = "\r\033[K"            // ANSI escape code to clear line
+	clearLine     = "\r\033[K"             // ANSI escape code to clear line
 )
 
 // Calculate signal energy in the voice frequency range
@@ -46,7 +46,7 @@ func calculateVoiceEnergy(spectrum []complex128, sampleRate float64) float64 {
 	binSize := sampleRate / float64(len(spectrum))
 	minBin := int(minFreq / binSize)
 	maxBin := int(maxFreq / binSize)
-	
+
 	if maxBin >= len(spectrum) {
 		maxBin = len(spectrum) - 1
 	}
@@ -83,12 +83,12 @@ func processCallback(nframes uint32) int {
 
 	// Check voice energy in first microphone
 	energy := calculateVoiceEnergy(X[0], sampleRate)
-	
+
 	if energy > energyThreshold {
 		// Process voice frequency range
 		binSize := sampleRate / float64(len(X[0]))
 		freqBins := make([]int, 0)
-		
+
 		// Get all bins in voice frequency range
 		for freq := minFreq; freq <= maxFreq; freq += binSize {
 			bin := int(freq * float64(len(X[0])) / sampleRate)
@@ -146,13 +146,13 @@ func processCallback(nframes uint32) int {
 		// Update angle if we have valid estimates
 		if validEstimates > 0 {
 			lastAngle = sumAngle / maxPower
-			
+
 			// Print only every printInterval
 			if time.Since(lastPrintTime) >= printInterval {
 				// Clear the current line and print the new status
-				fmt.Printf("%s[VOICE DETECTED] DOA: %3.1f° | Energy: %.6f | Time: %s\n", 
-					clearLine, 
-					lastAngle, 
+				fmt.Printf("%s[VOICE DETECTED] DOA: %3.1f° | Energy: %.6f | Time: %s\n",
+					clearLine,
+					lastAngle,
 					energy,
 					time.Now().Format("15:04:05.000"))
 				lastPrintTime = time.Now()
@@ -161,7 +161,7 @@ func processCallback(nframes uint32) int {
 	} else {
 		// Print no voice detected message less frequently
 		if time.Since(lastPrintTime) >= printInterval {
-			fmt.Printf("%s[NO VOICE] Energy: %.6f | Time: %s\n", 
+			fmt.Printf("%s[NO VOICE] Energy: %.6f | Time: %s\n",
 				clearLine,
 				energy,
 				time.Now().Format("15:04:05.000"))
@@ -230,7 +230,7 @@ func main() {
 	}
 
 	fmt.Println("Client activated")
-	fmt.Println("Connect your microphone inputs to the input_1, input_2, and input_3 ports")
+	fmt.Println("Connect your microphone inputs to the input_1 and input_2 ports")
 	fmt.Println("Press Ctrl+C to exit")
 
 	// Wait for signal to quit
@@ -280,6 +280,7 @@ func complexMatrixMul(A, B *mat.CDense) *mat.CDense {
 
 // Compute MUSIC spectrum manually
 func computeMUSICspectrum(angles []float64, a1, Qn *mat.CDense) *mat.CDense {
+	const epsilon = 1e-10 // Small value to prevent division by zero
 	rows, _ := a1.Dims()
 	musicSpectrum := mat.NewCDense(len(angles), 1, nil)
 
@@ -296,13 +297,18 @@ func computeMUSICspectrum(angles []float64, a1, Qn *mat.CDense) *mat.CDense {
 		term2 := complexMatrixMul(aVecH, term1)
 		term3 := complexMatrixMul(term2, aVec)
 
-		musicSpectrum.Set(k, 0, complex(1, 0)/term3.At(0, 0))
+		denominator := term3.At(0, 0)
+		if cmplx.Abs(denominator) < epsilon {
+			musicSpectrum.Set(k, 0, complex(1.0/epsilon, 0))
+		} else {
+			musicSpectrum.Set(k, 0, complex(1, 0)/denominator)
+		}
 	}
 
 	return musicSpectrum
 }
 
-// Compute steering vectors with delays for triangular microphone array
+// Compute steering vectors with delays for linear array (2 microphones)
 func computeSteeringVectors(N int, angles []float64, w, d, c float64) *mat.CDense {
 	rows, cols := N, len(angles)
 	a1 := mat.NewCDense(rows, cols, nil)
@@ -312,16 +318,12 @@ func computeSteeringVectors(N int, angles []float64, w, d, c float64) *mat.CDens
 		a1.Set(0, j, complex(1, 0))
 	}
 
-	// For each microphone after the reference
-	for i := 1; i < N; i++ {
-		micAngleRad := micAngles[i] * math.Pi / 180.0
-		
-		for j, angle := range angles {
-			angleRad := angle * math.Pi / 180.0
-			delay := -d * math.Cos(micAngleRad - angleRad)
-			phaseShift := cmplx.Exp(complex(0, -2*math.Pi*w*(delay/c)))
-			a1.Set(i, j, phaseShift)
-		}
+	// Second microphone
+	for j, angle := range angles {
+		angleRad := angle * math.Pi / 180.0
+		delay := -d * math.Sin(angleRad) // Changed from Cos to Sin for linear array
+		phaseShift := cmplx.Exp(complex(0, -2*math.Pi*w*(delay/c)))
+		a1.Set(1, j, phaseShift)
 	}
 
 	return a1
