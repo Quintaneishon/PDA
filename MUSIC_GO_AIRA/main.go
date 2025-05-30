@@ -22,7 +22,7 @@ var (
 	sampleRate  float64
 	bufferSize  uint32
 	N           = 3     // number of microphones
-	r           = 2     // number of signals in signal subspace
+	r           = 1     // number of signals in signal subspace
 	d           = 0.18  // distance between microphones in meters (18cm)
 	c           = 343.0 // speed of sound
 
