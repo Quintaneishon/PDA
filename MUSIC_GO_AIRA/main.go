@@ -103,7 +103,7 @@ func processCallback(nframes uint32) int {
 		validEstimates := 0
 
 		// Generate angles with finer resolution
-		angles := generateAngles(-90, 90, 0.5) // Changed to 0.5-degree resolution
+		angles := generateAngles(-90, 90, 0.5) // 0.5-degree resolution
 
 		for _, freqBin := range freqBins {
 			// Extract the frequency bin of interest
@@ -123,23 +123,23 @@ func processCallback(nframes uint32) int {
 
 			// Compute MUSIC spectrum
 			freq := float64(freqBin) * binSize
-			a1 := computeSteeringVectors(N, angles, 2*math.Pi*freq, d, c)
+			a1 := computeSteeringVectors(N, angles, freq, d, c)
 			spectrum := computeMUSICspectrum(angles, a1, Qn)
 
-			// Find peak in spectrum
+			// Find peak in spectrum with more robust detection
 			maxVal := 0.0
 			maxIdx := 0
 			for i := 0; i < len(angles); i++ {
-				val := cmplx.Abs(spectrum.At(i, 0))
+				val := 1.0 / cmplx.Abs(spectrum.At(i, 0))
 				if val > maxVal {
 					maxVal = val
 					maxIdx = i
 				}
 			}
 
-			// Weight the angle by its power
+			// Weight the angle by its power with better thresholding
 			power := maxVal
-			if power > 0.1 { // Threshold for valid estimation
+			if power > 0.01 { // Lower threshold for more sensitivity
 				sumAngle += angles[maxIdx] * power
 				maxPower += power
 				validEstimates++
@@ -152,7 +152,6 @@ func processCallback(nframes uint32) int {
 
 			// Print only every printInterval
 			if time.Since(lastPrintTime) >= printInterval {
-				// Clear the current line and print the new status
 				fmt.Printf("%s[VOICE DETECTED] DOA: %3.1f° | Energy: %.6f | Time: %s\n",
 					clearLine,
 					lastAngle,
@@ -283,29 +282,29 @@ func complexMatrixMul(A, B *mat.CDense) *mat.CDense {
 
 // Compute MUSIC spectrum manually
 func computeMUSICspectrum(angles []float64, a1, Qn *mat.CDense) *mat.CDense {
-	const epsilon = 1e-10 // Small value to prevent division by zero
 	rows, _ := a1.Dims()
 	musicSpectrum := mat.NewCDense(len(angles), 1, nil)
 
+	// Compute Qn^H (Hermitian transpose)
 	QnH := conjugateTranspose(Qn)
+
+	// Compute Qn @ Qn^H
 	term1 := complexMatrixMul(Qn, QnH)
 
 	for k := range angles {
+		// Extract column vector a1[:, k]
 		aVec := mat.NewCDense(rows, 1, nil)
 		for i := 0; i < rows; i++ {
 			aVec.Set(i, 0, a1.At(i, k))
 		}
 
+		// Compute a1^H @ term1 @ a1
 		aVecH := conjugateTranspose(aVec)
 		term2 := complexMatrixMul(aVecH, term1)
 		term3 := complexMatrixMul(term2, aVec)
 
-		denominator := term3.At(0, 0)
-		if cmplx.Abs(denominator) < epsilon {
-			musicSpectrum.Set(k, 0, complex(1.0/epsilon, 0))
-		} else {
-			musicSpectrum.Set(k, 0, complex(1, 0)/denominator)
-		}
+		// Store spectrum value
+		musicSpectrum.Set(k, 0, term3.At(0, 0))
 	}
 
 	return musicSpectrum
@@ -324,9 +323,7 @@ func computeSteeringVectors(N int, angles []float64, w, d, c float64) *mat.CDens
 	// Second microphone
 	for j, angle := range angles {
 		angleRad := angle * math.Pi / 180.0
-		// For linear array, use sin(theta) for DOA
-		delay := d * math.Sin(angleRad) / c
-		phaseShift := cmplx.Exp(complex(0, w*delay))
+		phaseShift := cmplx.Exp(complex(0, -2*math.Pi*w*(d/c)*math.Sin(angleRad)))
 		a1.Set(1, j, phaseShift)
 	}
 
