@@ -1,0 +1,461 @@
+package main
+
+import (
+	"fmt"
+	"math"
+	"math/cmplx"
+	"os"
+	"os/signal"
+	"sort"
+	"syscall"
+	"time"
+
+	"github.com/mjibson/go-dsp/fft"
+	"github.com/xthexder/go-jack"
+	"gonum.org/v1/gonum/mat"
+)
+
+var (
+	client     *jack.Client
+	inputPorts []*jack.Port
+	outputPort *jack.Port
+	sampleRate float64
+	bufferSize uint32
+	N          = 2     // number of microphones (changed from 3 to 2)
+	r          = 1     // number of signals in signal subspace (changed from 2 to 1)
+	d          = 0.18  // distance between microphones in meters (18cm)
+	c          = 343.0 // speed of sound
+
+	// Linear array geometry (2 microphones)
+	micAngles = []float64{0, 180} // Angles of microphones in linear array
+
+	// Voice detection parameters
+	energyThreshold = 0.01  // Adjust this value based on your setup
+	minFreq         = 85.0  // Minimum frequency to analyze (Hz)
+	maxFreq         = 255.0 // Maximum frequency to analyze (Hz)
+	lastAngle       = 0.0   // Store last valid angle
+
+	// Print control
+	lastPrintTime = time.Now()
+	printInterval = 500 * time.Millisecond // Print every 500ms
+	clearLine     = "\r\033[K"             // ANSI escape code to clear line
+)
+
+// Calculate signal energy in the voice frequency range
+func calculateVoiceEnergy(spectrum []complex128, sampleRate float64) float64 {
+	binSize := sampleRate / float64(len(spectrum))
+	minBin := int(minFreq / binSize)
+	maxBin := int(maxFreq / binSize)
+
+	if maxBin >= len(spectrum) {
+		maxBin = len(spectrum) - 1
+	}
+
+	energy := 0.0
+	for i := minBin; i <= maxBin; i++ {
+		energy += cmplx.Abs(spectrum[i]) * cmplx.Abs(spectrum[i])
+	}
+	return energy / float64(maxBin-minBin+1)
+}
+
+// processCallback is called by JACK in a realtime thread for audio processing
+func processCallback(nframes uint32) int {
+	// Get input buffers from all microphones
+	inputs := make([][]jack.AudioSample, N)
+	for i := 0; i < N; i++ {
+		inputs[i] = inputPorts[i].GetBuffer(nframes)
+	}
+
+	// Convert input samples to complex for FFT
+	complexInputs := make([][]complex128, N)
+	for i := 0; i < N; i++ {
+		complexInputs[i] = make([]complex128, len(inputs[i]))
+		for j, sample := range inputs[i] {
+			complexInputs[i][j] = complex(float64(sample), 0)
+		}
+	}
+
+	// Perform FFT on each input
+	X := make([][]complex128, N)
+	for i := 0; i < N; i++ {
+		X[i] = fft.FFT(complexInputs[i])
+	}
+
+	// Check voice energy in first microphone
+	energy := calculateVoiceEnergy(X[0], sampleRate)
+
+	if energy > energyThreshold {
+		// Process voice frequency range
+		binSize := sampleRate / float64(len(X[0]))
+		freqBins := make([]int, 0)
+
+		// Get all bins in voice frequency range
+		for freq := minFreq; freq <= maxFreq; freq += binSize {
+			bin := int(freq * float64(len(X[0])) / sampleRate)
+			if bin < len(X[0]) {
+				freqBins = append(freqBins, bin)
+			}
+		}
+
+		// Average DOA estimation over voice frequency range
+		var sumAngle float64
+		var maxPower float64
+		validEstimates := 0
+
+		// Generate angles with finer resolution
+		angles := generateAngles(-90, 90, 0.5) // 0.5-degree resolution
+
+		for _, freqBin := range freqBins {
+			// Extract the frequency bin of interest
+			thisX := make([]complex128, N)
+			for i := 0; i < N; i++ {
+				thisX[i] = X[i][freqBin]
+			}
+
+			// Compute correlation matrix
+			R := computeOuterProduct(thisX)
+
+			// Perform eigendecomposition
+			Q, D := eigendecomposition(R)
+			_, indices := sortEigenvalues(D)
+			sortedQ := reorderEigenvectors(Q, indices)
+			_, Qn := splitEigenvectors(sortedQ, r, N)
+
+			// Compute MUSIC spectrum
+			freq := float64(freqBin) * binSize
+			a1 := computeSteeringVectors(N, angles, freq, d, c)
+			spectrum := computeMUSICspectrum(angles, a1, Qn)
+
+			// Find peak in spectrum with more robust detection
+			maxVal := 0.0
+			maxIdx := 0
+			for i := 0; i < len(angles); i++ {
+				val := 1.0 / cmplx.Abs(spectrum.At(i, 0))
+				if val > maxVal {
+					maxVal = val
+					maxIdx = i
+				}
+			}
+
+			// Weight the angle by its power with better thresholding
+			power := maxVal
+			if power > 0.01 { // Lower threshold for more sensitivity
+				sumAngle += angles[maxIdx] * power
+				maxPower += power
+				validEstimates++
+			}
+		}
+
+		// Update angle if we have valid estimates
+		if validEstimates > 0 {
+			lastAngle = sumAngle / maxPower
+
+			// Print only every printInterval
+			if time.Since(lastPrintTime) >= printInterval {
+				fmt.Printf("%s[VOICE DETECTED] DOA: %3.1f° | Energy: %.6f | Time: %s\n",
+					clearLine,
+					lastAngle,
+					energy,
+					time.Now().Format("15:04:05.000"))
+				lastPrintTime = time.Now()
+			}
+		}
+	} else {
+		// Print no voice detected message less frequently
+		if time.Since(lastPrintTime) >= printInterval {
+			fmt.Printf("%s[NO VOICE] Energy: %.6f | Time: %s\n",
+				clearLine,
+				energy,
+				time.Now().Format("15:04:05.000"))
+			lastPrintTime = time.Now()
+		}
+	}
+
+	// Pass through audio to output (using first input)
+	out := outputPort.GetBuffer(nframes)
+	copy(out, inputs[0])
+
+	return 0
+}
+
+// shutdownCallback is called when JACK shuts down
+func shutdownCallback() {
+	fmt.Println("\nJACK shutdown")
+	os.Exit(1)
+}
+
+func main() {
+	// Open JACK client
+	var status int
+	client, status = jack.ClientOpen("doa_estimator", jack.NoStartServer)
+	if status != 0 || client == nil {
+		fmt.Printf("Failed to connect to JACK: %d\n", status)
+		return
+	}
+	defer client.Close()
+
+	// Set callbacks
+	client.SetProcessCallback(processCallback)
+	client.OnShutdown(shutdownCallback)
+
+	// Create input ports for each microphone
+	inputPorts = make([]*jack.Port, N)
+	for i := 0; i < N; i++ {
+		portName := fmt.Sprintf("input_%d", i+1)
+		inputPorts[i] = client.PortRegister(portName, jack.DEFAULT_AUDIO_TYPE, jack.PortIsInput, 0)
+		if inputPorts[i] == nil {
+			fmt.Printf("Failed to create input port %d\n", i+1)
+			return
+		}
+	}
+
+	// Create output port (for monitoring)
+	outputPort = client.PortRegister("output", jack.DEFAULT_AUDIO_TYPE, jack.PortIsOutput, 0)
+	if outputPort == nil {
+		fmt.Println("Failed to create output port")
+		return
+	}
+
+	// Get sample rate and buffer size
+	sampleRate = float64(client.GetSampleRate())
+	bufferSize = client.GetBufferSize()
+
+	fmt.Printf("Sample rate: %v Hz\n", sampleRate)
+	fmt.Printf("Buffer size: %v samples\n", bufferSize)
+	fmt.Printf("Voice frequency range: %.0f-%.0f Hz\n", minFreq, maxFreq)
+	fmt.Printf("Energy threshold: %.6f\n", energyThreshold)
+
+	// Activate client
+	if code := client.Activate(); code != 0 {
+		fmt.Printf("Failed to activate client: %d\n", code)
+		return
+	}
+
+	fmt.Println("Client activated")
+	fmt.Println("Connect your microphone inputs to the input_1 and input_2 ports")
+	fmt.Println("Press Ctrl+C to exit")
+
+	// Wait for signal to quit
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+}
+
+// Find the index of max value in a row
+func argMaxRow(matrix [][]float64, row int) int {
+	maxIdx := 0
+	maxVal := matrix[row][0]
+
+	for j := 1; j < len(matrix[row]); j++ {
+		if matrix[row][j] > maxVal {
+			maxVal = matrix[row][j]
+			maxIdx = j
+		}
+	}
+
+	return maxIdx
+}
+
+// Perform complex matrix multiplication
+func complexMatrixMul(A, B *mat.CDense) *mat.CDense {
+	rowsA, colsA := A.Dims()
+	rowsB, colsB := B.Dims()
+
+	if colsA != rowsB {
+		panic("Invalid matrix dimensions for multiplication")
+	}
+
+	C := mat.NewCDense(rowsA, colsB, nil)
+
+	for i := 0; i < rowsA; i++ {
+		for j := 0; j < colsB; j++ {
+			sum := complex(0, 0)
+			for k := 0; k < colsA; k++ {
+				sum += A.At(i, k) * B.At(k, j)
+			}
+			C.Set(i, j, sum)
+		}
+	}
+
+	return C
+}
+
+// Compute MUSIC spectrum manually
+func computeMUSICspectrum(angles []float64, a1, Qn *mat.CDense) *mat.CDense {
+	rows, _ := a1.Dims()
+	musicSpectrum := mat.NewCDense(len(angles), 1, nil)
+
+	// Compute Qn^H (Hermitian transpose)
+	QnH := conjugateTranspose(Qn)
+
+	// Compute Qn @ Qn^H
+	term1 := complexMatrixMul(Qn, QnH)
+
+	for k := range angles {
+		// Extract column vector a1[:, k]
+		aVec := mat.NewCDense(rows, 1, nil)
+		for i := 0; i < rows; i++ {
+			aVec.Set(i, 0, a1.At(i, k))
+		}
+
+		// Compute a1^H @ term1 @ a1
+		aVecH := conjugateTranspose(aVec)
+		term2 := complexMatrixMul(aVecH, term1)
+		term3 := complexMatrixMul(term2, aVec)
+
+		// Store spectrum value
+		musicSpectrum.Set(k, 0, term3.At(0, 0))
+	}
+
+	return musicSpectrum
+}
+
+// Compute steering vectors with delays for linear array (2 microphones)
+func computeSteeringVectors(N int, angles []float64, w, d, c float64) *mat.CDense {
+	rows, cols := N, len(angles)
+	a1 := mat.NewCDense(rows, cols, nil)
+
+	// First microphone (reference, no delay)
+	for j := 0; j < cols; j++ {
+		a1.Set(0, j, complex(1, 0))
+	}
+
+	// Second microphone
+	for j, angle := range angles {
+		angleRad := angle * math.Pi / 180.0
+		phaseShift := cmplx.Exp(complex(0, -2*math.Pi*w*(d/c)*math.Sin(angleRad)))
+		a1.Set(1, j, phaseShift)
+	}
+
+	return a1
+}
+
+// Extract signal and noise eigenvectors
+func splitEigenvectors(Q *mat.CDense, r int, N int) (signal *mat.CDense, noise *mat.CDense) {
+	rows, cols := Q.Dims()
+
+	if r < 0 || r > N || N > cols {
+		panic("Invalid values for r or N")
+	}
+
+	signal = mat.NewCDense(rows, r, nil)
+	for i := 0; i < r; i++ {
+		for j := 0; j < rows; j++ {
+			signal.Set(j, i, Q.At(j, i))
+		}
+	}
+
+	noiseCols := N - r
+	noise = mat.NewCDense(rows, noiseCols, nil)
+	for i := r; i < N; i++ {
+		for j := 0; j < rows; j++ {
+			noise.Set(j, i-r, Q.At(j, i))
+		}
+	}
+
+	return signal, noise
+}
+
+// DiagonalElement stores a complex number and its original index
+type DiagonalElement struct {
+	Value float64
+	Index int
+}
+
+// Sort eigenvalues in descending order and return sorted values and indices
+func sortEigenvalues(eigenvalues []complex128) ([]float64, []int) {
+	diagElements := make([]DiagonalElement, len(eigenvalues))
+	for i, val := range eigenvalues {
+		diagElements[i] = DiagonalElement{
+			Value: cmplx.Abs(val),
+			Index: i,
+		}
+	}
+
+	sort.Slice(diagElements, func(i, j int) bool {
+		return diagElements[i].Value > diagElements[j].Value
+	})
+
+	sortedValues := make([]float64, len(eigenvalues))
+	indices := make([]int, len(eigenvalues))
+	for i, elem := range diagElements {
+		sortedValues[i] = elem.Value
+		indices[i] = elem.Index
+	}
+
+	return sortedValues, indices
+}
+
+// Compute eigendecomposition of a matrix R
+func eigendecomposition(R [][]complex128) (*mat.CDense, []complex128) {
+	n := len(R)
+	cDense := mat.NewDense(n, n, nil)
+	for i := 0; i < n; i++ {
+		for j := 0; j < n; j++ {
+			cDense.Set(i, j, real(R[i][j]))
+		}
+	}
+
+	var eig mat.Eigen
+	ok := eig.Factorize(cDense, mat.EigenRight)
+	if !ok {
+		panic("Eigendecomposition failed")
+	}
+	eigenvalues := eig.Values(nil)
+	eigenvectors := mat.NewCDense(n, n, nil)
+	eig.VectorsTo(eigenvectors)
+
+	return eigenvectors, eigenvalues
+}
+
+// Compute conjugate transpose manually
+func conjugateTranspose(X *mat.CDense) *mat.CDense {
+	rows, cols := X.Dims()
+	XT := mat.NewCDense(cols, rows, nil)
+
+	for i := 0; i < rows; i++ {
+		for j := 0; j < cols; j++ {
+			XT.Set(j, i, cmplx.Conj(X.At(i, j)))
+		}
+	}
+	return XT
+}
+
+// Function to compute outer product (R = thisX * thisX)
+func computeOuterProduct(X []complex128) [][]complex128 {
+	n := len(X)
+	R := make([][]complex128, n)
+
+	for i := 0; i < n; i++ {
+		R[i] = make([]complex128, n)
+		for j := 0; j < n; j++ {
+			R[i][j] = X[i] * cmplx.Conj(X[j])
+		}
+	}
+
+	return R
+}
+
+// Generate angle range similar to np.arange(-90, 90, 0.1)
+func generateAngles(start, stop, step float64) []float64 {
+	count := int((stop-start)/step) + 1
+	angles := make([]float64, count)
+	for i := 0; i < count; i++ {
+		angles[i] = start + float64(i)*step
+	}
+	return angles
+}
+
+// Reorder eigenvectors according to sorted indices
+func reorderEigenvectors(Q *mat.CDense, indices []int) *mat.CDense {
+	rows, cols := Q.Dims()
+	newQ := mat.NewCDense(rows, cols, nil)
+
+	for newPos, oldPos := range indices {
+		for i := 0; i < rows; i++ {
+			newQ.Set(i, newPos, Q.At(i, oldPos))
+		}
+	}
+
+	return newQ
+}

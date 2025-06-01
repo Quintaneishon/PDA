@@ -21,29 +21,30 @@ import (
 )
 
 func main() {
-	doa := 30.0
-	d := 20.0     // distance between microphones in meters
-	noiseW := 0.5 // noise presence (between 0 and 1)
+	doas := []float64{-30.0, 40.0} // directional of arrival of both signals in degrees
+	d := 20.0                      // distance between microphones in meters
+	noiseW := 0.5                  // noise presence (between 0 and 1)
 
 	K := 200.0                   // signal size in samples, also frequency sampling
 	w := generateIndices(int(K)) // frequency vector
 
 	///////////////////////////
 
-	freq := 2.0
+	freq := []float64{2, 4} // base frecuency for signals
 
 	c := 343.0 // speed of sound
 
-	N := 2 // number of microphones
-	r := 1 // number of signals in signal subspace
+	N := 3 // number of microphones
+	r := 2 // number of signals in signal subspace
 
 	// original signals
-	s1 := generateSineWave(freq, int(K))
+	s1 := generateSineWave(freq[0], int(K))
+	s2 := generateSineWave(freq[1], int(K))
 
 	///////////////////////////
 	// Prepare signals for plotting
-	signals := []plotter.XYs{complexToXY(s1)}
-	labels := []string{"Signal 1"}
+	signals := []plotter.XYs{complexToXY(s1), complexToXY(s2)}
+	labels := []string{"Signal 1", "Signal 2"}
 
 	// Plot and save as PNG
 	err := plotSignals(signals, labels, "sine_waves.png")
@@ -53,16 +54,18 @@ func main() {
 
 	///////////////////////////
 
-	x := s1
-	y := applyPhaseShift(s1, w, d, c, doa)
+	x := addComplexSlices(s1, s2)
+	y := addComplexSlices(applyPhaseShift(s1, w, d, c, doas[0]), applyPhaseShift(s2, w, d, c, doas[1]))
+	z := addComplexSlices(applyPhaseShift(s1, w, 2*d, c, doas[0]), applyPhaseShift(s2, w, 2*d, c, doas[1]))
 
 	addNoise(x, noiseW)
 	addNoise(y, noiseW)
+	addNoise(z, noiseW)
 
 	///////////////////////////
 	// Prepare signals for plotting
-	signals = []plotter.XYs{complexToXY(x), complexToXY(y)}
-	labels = []string{"Signal 1", "Signal 2"}
+	signals = []plotter.XYs{complexToXY(x), complexToXY(y), complexToXY(z)}
+	labels = []string{"Signal 1", "Signal 2", "Signal 3"}
 
 	// Plot and save as PNG
 	err = plotSignals(signals, labels, "shift_waves.png")
@@ -72,7 +75,7 @@ func main() {
 
 	///////////////////////////
 	// Data matrix with noise
-	X := computeFFT([][]complex128{x, y})
+	X := computeFFT([][]complex128{x, y, z})
 
 	// Define angles to look for orthogonality
 	angles := generateAngles(-90, 90, 0.1) // Generate angles array
@@ -83,24 +86,30 @@ func main() {
 	// Normally, you should do the next step for each appropriate frequency
 	// we're only doing it in the frequencies that most closely fit s1's and s2's frequency
 
-	thisW := 2.0
+	thisWs := []float64{2, 4}
 
-	thisX := extractColumn(X, thisW, K)
-	R := computeOuterProduct(thisX)
-	Q, D := eigendecomposition(R)
-	_, indices := sortEigenvalues(D)
-	sortedQ := reorderEigenvectors(Q, indices)
-	_, Qn := splitEigenvectors(sortedQ, r, N)
-	a1 := computeSteeringVectors(N, angles, thisW, d, c)
-	spectrum := computeMUSICspectrum(angles, a1, Qn)
-	// Extract real values from the spectrum for the current frequency
-	for j := 0; j < len(angles); j++ {
-		musicSpectrum[0][j] = cmplx.Abs(spectrum.At(j, 0))
+	for i, thisW := range thisWs {
+		thisX := extractColumn(X, thisW, K)
+		R := computeOuterProduct(thisX)
+		Q, D := eigendecomposition(R)
+
+		/////// Aiuda
+		_, indices := sortEigenvalues(D)
+		sortedQ := reorderEigenvectors(Q, indices)
+		_, Qn := splitEigenvectors(sortedQ, r, N)
+		a1 := computeSteeringVectors(N, angles, thisW, d, c)
+		spectrum := computeMUSICspectrum(angles, a1, Qn)
+		// Extract real values from the spectrum for the current frequency
+		for j := 0; j < len(angles); j++ {
+			musicSpectrum[i][j] = cmplx.Abs(spectrum.At(j, 0))
+		}
 	}
 
 	// Print the detected angles for each frequency
-	maxIdx := argMaxRow(musicSpectrum, 0)
-	fmt.Printf("Signal with frequency %.0f Hz detected at angle %.2f degrees\n", thisW, angles[maxIdx])
+	for i, f := range freq {
+		maxIdx := argMaxRow(musicSpectrum, i)
+		fmt.Printf("Signal with frequency %.0f Hz detected at angle %.2f degrees\n", f, angles[maxIdx])
+	}
 
 	// Create and save the MUSIC spectrum plot
 	err = plotMUSICSpectrum(angles, musicSpectrum, "music_spectrum.png")
@@ -148,6 +157,20 @@ func plotMUSICSpectrum(angles []float64, musicSpectrum [][]float64, filename str
 	line1.Color = color.RGBA{R: 255, G: 105, B: 180, A: 255} // Hotpink
 	p.Add(line1)
 	p.Legend.Add("2Hz", line1)
+
+	// Plot second dataset (4Hz, steelblue)
+	points2 := make(plotter.XYs, len(angles))
+	for i, angle := range angles {
+		points2[i].X = angle
+		points2[i].Y = musicSpectrum[1][i]
+	}
+	line2, err := plotter.NewLine(points2)
+	if err != nil {
+		return err
+	}
+	line2.Color = color.RGBA{R: 70, G: 130, B: 180, A: 255} // Steelblue
+	p.Add(line2)
+	p.Legend.Add("4Hz", line2)
 
 	return p.Save(6*vg.Inch, 4*vg.Inch, filename)
 }
@@ -221,6 +244,12 @@ func computeSteeringVectors(N int, angles []float64, w, d, c float64) *mat.CDens
 	for j, angle := range angles {
 		phaseShift := cmplx.Exp(complex(0, -2*math.Pi*w*(d/c)*math.Sin(angle*math.Pi/180)))
 		a1.Set(1, j, phaseShift)
+	}
+
+	// Third microphone (delayed by 2*d/c)
+	for j, angle := range angles {
+		phaseShift := cmplx.Exp(complex(0, -2*math.Pi*w*(2*d/c)*math.Sin(angle*math.Pi/180)))
+		a1.Set(2, j, phaseShift)
 	}
 
 	return a1
@@ -472,7 +501,7 @@ func plotSignals(signals []plotter.XYs, labels []string, filename string) error 
 // Generate angle range similar to np.arange(-90, 90, 0.1)
 func generateAngles(start, stop, step float64) []float64 {
 	var angles []float64
-	for angle := start; angle <= stop; angle += step {
+	for angle := start; angle < stop; angle += step {
 		angles = append(angles, angle)
 	}
 	return angles
