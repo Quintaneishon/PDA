@@ -1,0 +1,25 @@
+# Audio processing
+librosa>=0.11.0
+soundfile>=0.12.0
+torchcodec>=0.1.0
+
+# Deep Learning
+torch>=2.5.0
+torchaudio>=2.5.0
+
+# Data manipulation
+numpy>=1.22.0
+scipy>=1.6.0
+
+# Visualization
+matplotlib>=3.5.0
+ipython>=8.0.0
+
+# Progress bars
+tqdm>=4.65.0
+
+# Jupyter
+jupyter>=1.0.0
+notebook>=6.5.0
+ipykernel>=6.20.0
+
